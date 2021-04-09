@@ -5,7 +5,7 @@
 
 from struct import unpack
 
-from qiling.loader.macho_parser.loadcommand import *
+from .loadcommand import *
 import io
 
 
