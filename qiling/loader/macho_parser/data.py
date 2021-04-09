@@ -5,6 +5,10 @@
 
 from struct import unpack
 
+from qiling.loader.macho_parser.loadcommand import *
+import io
+
+
 class Segment:
 
     def __init__(self, lc, data):
@@ -232,6 +236,107 @@ class DySymbolTable:
             for i in range(self.locreloc_num):
                 self.locreloc.append(Relocation64(data[self.locreloc_offset + slide : self.locreloc_offset + slide + 8]))
                 slide += 8
+
+    def __str__(self):
+        pass
+
+
+class DyldInfoTable:
+
+    class RebaseInfo:
+        def __init__(self, segment_index, segment_offset):
+            self.segment_index = segment_index
+            self.segment_offset = segment_offset
+
+    REBASE_TYPE_POINTER = 1
+    REBASE_TYPE_TEXT_ABSOLUTE32 = 2
+    REBASE_TYPE_TEXT_PCREL32 = 3
+
+    REBASE_OPCODE_MASK = 0xF0
+    REBASE_IMMEDIATE_MASK = 0x0F
+    REBASE_OPCODE_DONE = 0x00
+    REBASE_OPCODE_SET_TYPE_IMM = 0x10
+    REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB = 0x20
+    REBASE_OPCODE_ADD_ADDR_ULEB = 0x30
+    REBASE_OPCODE_ADD_ADDR_IMM_SCALED = 0x40
+    REBASE_OPCODE_DO_REBASE_IMM_TIMES = 0x50
+    REBASE_OPCODE_DO_REBASE_ULEB_TIMES = 0x60
+    REBASE_OPCODE_DO_REBASE_ADD_ADDR_ULEB = 0x70
+    REBASE_OPCODE_DO_REBASE_ULEB_TIMES_SKIPPING_ULEB = 0x80
+
+    @staticmethod
+    def read_uleb128(reader):
+        """
+        Unsigned Little Endian Base 128
+        """
+        result = 0
+        bit = 0
+        while True:
+            char = ord(reader.read(1))
+            slice = char & 0x7f
+            result |= slice << bit
+            bit += 7
+            if not (char & 0x80):
+                break
+        return result
+
+    def __init__(self, ql, lc: LoadDyldInfoOnly, data):
+        self.rebase_info_offset = lc.rebase_info_offset
+        self.rebase_info_size = lc.rebase_info_size
+        self.binding_info_offset = lc.binding_info_offset
+        self.binding_info_size = lc.binding_info_size
+        self.weak_binding_info_offset = lc.weak_binding_info_offset
+        self.weak_binding_info_size = lc.weak_binding_info_size
+        self.lazy_binding_info_offset = lc.lazy_binding_info_offset
+        self.lazy_binding_info_size = lc.lazy_binding_info_size
+        self.export_info_offset = lc.export_info_offset
+        self.export_info_size = lc.export_info_size
+
+        self.rebase_list = []
+
+        reader = io.BytesIO(data)
+        reader.seek(self.rebase_info_offset)
+
+        pointer_size = ql.pointersize
+        seg_index = 0
+        seg_offset = 0
+
+        while reader.tell() < self.rebase_info_offset + self.rebase_info_size:
+            code = ord(reader.read(1))
+            opcode = code & self.REBASE_OPCODE_MASK
+            immediate = code & self.REBASE_IMMEDIATE_MASK
+
+            if opcode == self.REBASE_OPCODE_DONE:
+                break
+            elif opcode == self.REBASE_OPCODE_SET_TYPE_IMM:
+                assert immediate == self.REBASE_TYPE_POINTER
+            elif opcode == self.REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB:
+                seg_index = immediate
+                seg_offset = self.read_uleb128(reader)
+            elif opcode == self.REBASE_OPCODE_ADD_ADDR_ULEB:
+                seg_offset += self.read_uleb128(reader)
+            elif opcode == self.REBASE_OPCODE_ADD_ADDR_IMM_SCALED:
+                seg_offset += immediate * pointer_size
+            elif opcode == self.REBASE_OPCODE_DO_REBASE_IMM_TIMES:
+                for i in range(immediate):
+                    self.rebase_list.append(DyldInfoTable.RebaseInfo(seg_index, seg_offset))
+                    seg_offset += pointer_size
+            elif opcode == self.REBASE_OPCODE_DO_REBASE_ULEB_TIMES:
+                count = self.read_uleb128(reader)
+                for i in range(count):
+                    self.rebase_list.append(DyldInfoTable.RebaseInfo(seg_index, seg_offset))
+                    seg_offset += pointer_size
+            elif opcode == self.REBASE_OPCODE_DO_REBASE_ADD_ADDR_ULEB:
+                self.rebase_list.append(DyldInfoTable.RebaseInfo(seg_index, seg_offset))
+                seg_offset += self.read_uleb128(reader) + pointer_size
+            elif opcode == self.REBASE_OPCODE_DO_REBASE_ULEB_TIMES_SKIPPING_ULEB:
+                count = self.read_uleb128(reader)
+                skip = self.read_uleb128(reader)
+                for i in range(count):
+                    self.rebase_list.append(DyldInfoTable.RebaseInfo(seg_index, seg_offset))
+                    seg_offset += skip + pointer_size
+            else:
+                raise NotImplementedError
 
     def __str__(self):
         pass
